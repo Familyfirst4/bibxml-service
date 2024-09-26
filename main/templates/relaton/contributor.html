@@ -3,17 +3,30 @@
 {% if val.organization.abbreviation or val.organization.name or val.person.name %}
 
   {% if val.role %}
-    <span title="Participant role(s)" class="opacity-50">{{ val.role|as_list|join:", " }}</span>
+    <span title="Participant role(s)" class="opacity-50">
+      {% for role in val.role|as_list %}
+        {# NB: roles should be sorted by type for ifchanged to make sense #}
+        {% ifchanged role.type %}
+          {# We just ignore roles without type for now #}
+          {% if role.type %}
+            <span title="{{ role.description|default:"" }}" class="
+              {# Separate roles with a comma #}
+              after:inline after:content-[',_'] last:after:content-none
+            ">{{ role.type }}</span>
+          {% endif %}
+        {% endifchanged %}
+      {% endfor %}
+    </span>
   {% endif %}
 
   {% if val.organization.abbreviation or val.organization.name %}
-    {% with org_name=val.organization.name|as_list|first link=val|substruct_search_link:'{"contributor": [%s]};as_list=yes;only=organization.abbreviation,organization.name' %}
+    {% with link=val|substruct_search_link:'{"contributor": [%s]};as_list=yes;only=organization.abbreviation,organization.name[*].content' %}
       <a class="link" href="{{ link }}" title="Organization’s name or abbreviation">
-        {{ val.organization.abbreviation|default:org_name|default:"N/A" }}
+        {% include "relaton/org.html" with val=val.organization %}
       </a>
     {% endwith %}
   {% elif val.person.name %}
-    {% with link=val|substruct_search_link:'{"contributor": [%s]};as_list=yes;only=person.name.completename.content,person.name.surname.content,person.name.forename[*].content' %}
+    {% with link=val|substruct_search_link:'{"contributor": [%s]};as_list=yes;only=person.name.completename.content,person.name.surname.content,person.name.given.forename[*].content' %}
       <a class="link" href="{{ link }}" title="Individual’s name">
         {% include "relaton/person_name.html" with val=val.person.name %}
       </a>

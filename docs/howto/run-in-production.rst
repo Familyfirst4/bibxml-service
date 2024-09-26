@@ -41,14 +41,14 @@ on AWS infrastructure using the bundled Compose configuration.
       CONTACT_EMAIL=operating team contact email
       DATATRACKER_CLIENT_ID=Datatracker OAuth2 client ID
       DATATRACKER_CLIENT_SECRET=Datatracker OAuth2 client secret
-      SOURCE_REPO_URL=https://github.com/ietf-ribose/bibxml-service
+      SOURCE_REPO_URL=https://github.com/ietf-tools/bibxml-service
       SENTRY_DSN=your Sentry DSN string
       MATOMO_URL=Matomo URL
       MATOMO_SITE_ID=Matomo site ID
 
 7. Run the command::
 
-       sudo docker-compose build && sudo docker-compose -f docker-compose.yml up
+       sudo docker-compose build && sudo docker-compose -f docker-compose.yml -f docker-compose.prod.yml up
 
    If you want to run the bundled monitoring services [4]_, this would be::
 

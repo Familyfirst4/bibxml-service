@@ -56,28 +56,9 @@ def home(request):
 
     metrics.gui_home_page_hits.inc()
 
-    non_empty_datasets = (
-        RefData.objects.values_list('dataset', flat=True).
-        distinct())
-
-    total_indexed_citations = RefData.objects.count()
-    units = ('', 'k', 'M', 'G', 'T', 'P')
-    factor = 1000.0
-    magnitude = int(floor(log_(max(abs(total_indexed_citations), 1), factor)))
-    total_indexed_human = '%.2f%s' % (
-        total_indexed_citations / factor**magnitude,
-        units[magnitude],
-    )
-
-    browsable_datasets = [
-        ds_id
-        for ds_id in settings.RELATON_DATASETS
-        if ds_id in non_empty_datasets]
-
     return render(request, 'browse/home.html', dict(
         **shared_context,
-        total_indexed_human=total_indexed_human,
-        browsable_datasets=browsable_datasets,
+        browsable_datasets=settings.RELATON_DATASETS,
     ))
 
 
@@ -166,20 +147,10 @@ def browse_citation_by_docid(request):
 
     else:
         citation_dict = unpack_dataclasses(citation.dict())
-        try:
-            xml2rfc_urls = xml2rfc_adapters.list_xml2rfc_urls(
-                citation,
-                request,
-            )
-        except Exception:
-            log.exception(
-                "Failed to reverse xml2rfc URLs for item with docid %s",
-                docid)
-            xml2rfc_urls = []
         metrics.gui_bibitem_hits.labels(docid, 'success').inc()
         return render(request, 'browse/citation_details.html', dict(
             data=citation_dict,
-            xml2rfc_urls=xml2rfc_urls,
+            xml2rfc_urls=_get_xml2rfc_urls_safe(citation, request),
             **shared_context,
         ))
 
@@ -254,8 +225,8 @@ def browse_external_reference(request, dataset_id):
         if source := external_sources.registry.get(dataset_id, None):
             try:
                 # external_item = source.get_item(ref.strip())
-                _data = source.get_item(ref.strip()).dict()
-                data = unpack_dataclasses(_data)
+                item = source.get_item(ref.strip(), None)
+                data = unpack_dataclasses(item.dict())
             except RuntimeError as exc:
                 log.exception(
                     "Failed to retrieve or unpack "
@@ -267,17 +238,18 @@ def browse_external_reference(request, dataset_id):
                     "Couldn’t retrieve citation: {}".format(
                         str(exc)))
             else:
-                composed = {
-                    **data['bibitem'],
-                    'primary_docid': ref.strip(),
-                    'sources': {
+                composed = dict(
+                    primary_docid=ref.strip(),
+                    sources={
                         dataset_id: data,
                     },
-                }
+                    **data['bibitem'],
+                )
                 return render(request, 'browse/citation_details.html', dict(
                     dataset_id=dataset_id,
                     ref=ref,
                     data=composed,
+                    xml2rfc_urls=_get_xml2rfc_urls_safe(item.bibitem, request),
                     **shared_context,
                 ))
         else:
@@ -358,3 +330,16 @@ class IndexedDatasetCitationListView(ListView):
             except ValidationError:
                 pass
         return ctx
+
+
+def _get_xml2rfc_urls_safe(item: BibliographicItem, request):
+    try:
+        return xml2rfc_adapters.list_xml2rfc_urls(
+            item,
+            request,
+        )
+    except Exception:
+        log.exception(
+            "Failed to reverse xml2rfc URLs for item %s",
+            item.docid)
+        return []

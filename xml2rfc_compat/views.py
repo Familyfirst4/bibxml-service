@@ -1,4 +1,4 @@
-from typing import cast, Tuple, Optional, TypedDict, Dict
+from typing import Tuple, Optional, TypedDict, Dict, Callable
 import re
 import logging
 
@@ -10,9 +10,8 @@ from bib_models import BibliographicItem
 from prometheus import metrics
 
 from main.exceptions import RefNotFoundError
-from main.query import build_citation_for_docid
 
-from .models import Xml2rfcItem
+from .models import Xml2rfcItem, construct_normalized_xml2rfc_subpath
 from .adapters import Xml2rfcAdapter, adapters
 # from .resolvers import AnchorFormatterFunc, anchor_formatter_registry
 from .serializer import to_xml_string
@@ -24,7 +23,7 @@ log = logging.getLogger(__name__)
 
 __all__ = (
     'handle_xml2rfc_path',
-    'resolve_manual_map',
+    'resolve_mapping',
     'resolve_automatically',
     'obtain_fallback_xml',
     'ResolutionOutcome',
@@ -32,57 +31,50 @@ __all__ = (
 )
 
 
-def resolve_manual_map(subpath: str) -> Tuple[
-    Optional[str],
+def resolve_mapping(
+    subpath: str,
+    adapter: Xml2rfcAdapter,
+) -> Tuple[
     Optional[BibliographicItem],
     Optional[str],
 ]:
-    """Returns a 3-tuple of mapping configuration, resolved item,
+    """Returns a 2-tuple of resolved item,
     and error as a string, any can be None.
     Does not raise exceptions.
+
+    .. important::
+
+       If a mapping for ``reference.foo.bar.xml``
+       should apply for ``_reference.foo.bar.xml``,
+       then ``subpath`` should be normalized
+       stripping the possible underscore in ``_reference``.
     """
-    mapped_docid: Optional[str]
     resolved_item: Optional[BibliographicItem]
     error: Optional[str]
+
     try:
-        manual_map = Xml2rfcItem.objects.get(subpath=subpath)
+        resolved_item = adapter.resolve_mapped()
     except Xml2rfcItem.DoesNotExist:
-        mapped_docid = None
         resolved_item = None
+        error = "not a legacy path or not indexed"
+    except RefNotFoundError:
+        log.exception(
+            "Unable to resolve an item for xml2rfc path %s, "
+            "despite it being mapped",
+            subpath)
         error = "not found"
+        resolved_item = None
+    except ValidationError:
+        log.exception(
+            "Unable to validate item "
+            "mapped to xml2rfc path %s",
+            subpath)
+        error = "validation problem"
+        resolved_item = None
     else:
-        mapped_docid = (
-            (manual_map.sidecar_meta or {}).
-            get('primary_docid', None))
+        error = None
 
-        if mapped_docid is None:
-            resolved_item = None
-            error = "not mapped"
-        else:
-            try:
-                resolved_item = build_citation_for_docid(
-                    cast(str, mapped_docid))
-            except ValidationError:
-                log.exception(
-                    "Unable to validate item "
-                    "manually mapped to xml2rfc path %s "
-                    "via docid %s",
-                    subpath,
-                    mapped_docid)
-                error = "validation problem"
-                resolved_item = None
-            except RefNotFoundError:
-                log.exception(
-                    "Unable to resolve an item for xml2rfc path %s, "
-                    "despite it being manually mapped via docid %s",
-                    subpath,
-                    mapped_docid)
-                error = "not found"
-                resolved_item = None
-            else:
-                error = None
-
-    return mapped_docid, resolved_item, error
+    return resolved_item, error
 
 
 def resolve_automatically(
@@ -90,12 +82,17 @@ def resolve_automatically(
     anchor: str,
     adapter: Xml2rfcAdapter,
 ) -> Tuple[
-    str,
     Optional[BibliographicItem],
     Optional[str],
 ]:
-    """Returns a 3-tuple of resolver function name, resolved item,
+    """
+    This function does really nothing except invoking
+    given adapter instance’s ``resolve()``
+    method with proper error handling and logging.
+
+    Returns a 2-tuple of resolved item,
     and error as a string, any can be None.
+
     Does not raise exceptions.
     """
     item: Optional[BibliographicItem] = None
@@ -118,15 +115,7 @@ def resolve_automatically(
             subpath)
         error = "uncategorized issue"
 
-    config_str = adapter.__class__.__name__
-    try:
-        config_str = '%s: %s' % (
-            config_str,
-            ' -> '.join([i.replace(',', ' ') for i in adapter._log])
-        )
-    except Exception:
-        pass
-    return config_str, item, error
+    return item, error
 
 
 class ResolutionOutcome(TypedDict, total=True):
@@ -149,11 +138,17 @@ def handle_xml2rfc_path(
 
     This function handles filename
     cleanup, obtaining a :class:`relaton.models.bibdata.BibliographicItem`
-    instance, serializing it into an XML string with proper anchor tag supplied,
+    instance, serializing it into an XML string with proper anchor tag,
     incrementing relevant metrics.
 
-    The view function behaves as following
-    (see also :ref:`xml2rfc-path-resolution-algorithm`):
+    Notable aspects of this view’s behavior:
+
+    - When resolving a mapped Relaton resource or fallback XML,
+      normalized xml2rfc subpath is used
+      (for example, it never has an underscore before the ``reference.`` part).
+
+      However, full xml2rfc subpath is used when logging
+      or when incrementing access metrics.
 
     - Inspects ``X-Requested-With`` request header, and does not increment
       access metric if it’s the internal ``xml2rfcResolver`` tool.
@@ -190,7 +185,9 @@ def handle_xml2rfc_path(
              will override ``anchor`` attribute in XML.
 
       - In case of failure (and no fallback available),
-        ``application/json`` response with error description.
+        ``application/json`` response with error description
+
+    .. seealso:: :ref:`xml2rfc-path-resolution-algorithm`
     """
     resp: HttpResponse
 
@@ -209,31 +206,33 @@ def handle_xml2rfc_path(
     # Below code attempts to catch anything
     # and return fallback XML in any problematic scenario.
 
+    subpath_normalized = construct_normalized_xml2rfc_subpath(dirname, anchor)
+
     adapter = adapter_cls(xml2rfc_subpath, normalized_dirname, anchor)
 
     methods = ["manual", "auto", "fallback"]
     method_results: Dict[str, ResolutionOutcome] = {}
 
-    mapped_docid, item, error = resolve_manual_map(xml2rfc_subpath)
-    if mapped_docid:
+    item, error = resolve_mapping(subpath_normalized, adapter)
+    if item:
         method_results['manual'] = dict(
-            config=mapped_docid,
+            config=adapter.format_log(),
             error='' if item else (error or "no error information"),
         )
-
-    if not item:
-        config, item, error = resolve_automatically(
+    else:
+        item, error = resolve_automatically(
             xml2rfc_subpath,
             anchor,
             adapter)
         method_results['auto'] = dict(
-            config=config,
+            config=adapter.format_log(),
             error='' if item else (error or "no error information"),
         )
 
     try:
-        if adapter_anchor := adapter.format_anchor():
-            requested_anchor = adapter_anchor
+        # format_anchor() should be called after attempts to resolve the item
+        if not requested_anchor and (_anch := adapter.format_anchor()):
+            requested_anchor = _anch
     except Exception:
         log.exception(
             "xml2rfc path (%s): "
@@ -242,7 +241,10 @@ def handle_xml2rfc_path(
 
     if item:
         try:
-            xml_repr = to_xml_string(item, anchor=requested_anchor)
+            xml_repr = to_xml_string(
+                item,
+                anchor=requested_anchor,
+            ).decode('utf-8')  # relaton-py’s serializer encodes.
         except Exception:
             log.exception(
                 "xml2rfc path (%s): "
@@ -252,7 +254,7 @@ def handle_xml2rfc_path(
 
     if not xml_repr:
         xml_repr = obtain_fallback_xml(
-            xml2rfc_subpath,
+            subpath_normalized,
             anchor=requested_anchor)
         method_results['fallback'] = dict(
             config='',
@@ -262,6 +264,11 @@ def handle_xml2rfc_path(
     metric_label: str
 
     if xml_repr:
+        xml_repr = _replace_anchor(
+            xml_repr,
+            lambda anchor: adapter.mangle_anchor(anchor),
+        )
+
         if item:
             metric_label = 'success'
         else:
@@ -326,6 +333,11 @@ def obtain_fallback_xml(
     """Obtains XML fallback for given subpath, if possible.
 
     Does not raise exceptions.
+
+    .. note:: You may want to normalize ``subpath``
+              to remove the possible underscore in ``_reference``.
+              This would mean fallback response for ``_reference.foo.bar.xml``
+              can use XML from ``reference.foo.bar.xml``, if it exists.
     """
 
     requested_dirname = subpath.split('/')[-2]
@@ -349,15 +361,36 @@ def obtain_fallback_xml(
                 return xml_repr
 
 
-def _replace_anchor(xml_repr: str, anchor: str) -> str:
+anchor_regex = re.compile(r'anchor=\"([^\"]*)\"')
+"""Regular expression used for mangling anchor in an XML string."""
+
+
+def _replace_anchor(xml_repr: str, anchor: str | Callable[[str], str]) -> str:
     """Replace the top-level anchor property with provided anchor.
 
-    Intended to be used with fallback XML that can possibly have
+    Intended to be used with XML string that could possibly have
     malformed anchors.
+
+    :param anchor:
+        Either a string (anchor to replace with),
+        or a callable that takes an existing anchor and returns a new one.
 
     .. note:: Does not add anchor if it’s missing,
               and does not validate/deserialize given XML."""
 
-    anchor_regex = re.compile(r'anchor=\"([^\"]*)\"')
+    if not isinstance(anchor, str):
+        if match := anchor_regex.search(xml_repr):
+            old_anchor = match.group(1)
+            try:
+                new_anchor = anchor(old_anchor)
+            except Exception:
+                return xml_repr
+        else:
+            return xml_repr
+    else:
+        new_anchor = anchor
 
-    return anchor_regex.sub(r'anchor="%s"' % anchor, xml_repr, count=1)
+    return anchor_regex.sub(
+        r'anchor="%s"' % new_anchor,
+        xml_repr,
+        count=1)

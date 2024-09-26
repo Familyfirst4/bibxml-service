@@ -112,6 +112,20 @@ input, button, select, textarea {
     }
   }
 
+  /**
+   * A button with an optional icon.
+   * Intended to be shown on bg-dark-200/dark:bg-dark-800 parent.
+   */
+  .button-v2 {
+    @apply flex flex-row items-stretch overflow-hidden;
+    > .label {
+      @apply bg-dark-300 dark:bg-dark-900 whitespace-nowrap flex-1 py-1 px-2;
+    }
+    > .icon {
+      /** Can contain Heroicon SVG. Use text-sm with Solid style. */
+      @apply bg-dark-300 dark:bg-dark-900 py-1 px-1 shrink-0 ml-px;
+    }
+  }
   .input-on-blue {
     @apply text-inherit bg-dark-800/20 placeholder:tracking-tight placeholder:text-inherit;
   }
@@ -131,9 +145,91 @@ input, button, select, textarea {
   }
 
   .running-text {
-    /* A div with sectioned text inside. */
+    /* Basic markup. */
 
+    p + p {
+      @apply indent-4;
+    }
+
+    ul {
+      @apply list-disc list-outside pl-4;
+    }
+
+    ol {
+      @apply list-decimal list-outside pl-4;
+    }
+
+    dl {
+      @apply my-2;
+      > dt {
+        @apply font-bold mt-2;
+      }
+      > dd {
+        @apply ml-4;
+      }
+    }
+
+    figure {
+      @apply my-2;
+
+      > .image-container {
+        @apply object-contain;
+
+        > img {
+          @apply block md:max-w-[80%] md:max-h-[60vh];
+        }
+      }
+
+      &.annotated {
+        > .image-container {
+          > div {
+            /* Annotation container created by Annotorious. */
+            @apply align-bottom md:max-w-[80%] md:max-h-[60vh];
+            > img {
+              @apply md:max-w-[100%] md:max-h-[60vh];
+            }
+          }
+        }
+      }
+
+      > figcaption {
+        @apply pt-2 border-t-2 border-dark-500 relative pl-4;
+        &:before {
+          @apply absolute left-0 content-['↑'];
+        }
+      }
+    }
+
+    .admonition {
+      @apply py-2 px-4 mb-1 mt-3 relative;
+
+      &:before {
+        content: attr(aria-label) ": ";
+        @apply absolute -top-2 left-0 pl-4 pr-4 text-xs font-thin ;
+      }
+
+      &.note {
+        @apply bg-sky-100 dark:bg-sky-800 text-sky-800 dark:text-sky-100;
+        &:before {
+          @apply bg-sky-100 dark:bg-sky-800 content-['Note:'];
+        }
+      }
+      &.see-also {
+        @apply bg-emerald-100 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-100;
+        &:before {
+          @apply bg-emerald-100 dark:bg-emerald-800 content-['See_also:'];
+        }
+      }
+
+      > header {
+        @apply font-bold;
+      }
+    }
+  }
+
+  .sectioned-running-text {
     section {
+      @apply running-text;
 
       header {
         @apply mb-2 text-dark-900 dark:text-dark-100;
@@ -144,85 +240,6 @@ input, button, select, textarea {
 
       header + p {
         @apply mt-2;
-      }
-
-      p + p {
-        @apply indent-4;
-      }
-
-      ul {
-        @apply list-disc list-outside pl-4;
-      }
-
-      ol {
-        @apply list-decimal list-outside pl-4;
-      }
-
-      dl {
-        @apply my-2;
-        > dt {
-          @apply font-bold mt-2;
-        }
-        > dd {
-          @apply ml-4;
-        }
-      }
-
-      figure {
-        @apply my-2;
-
-        > .image-container {
-          @apply object-contain;
-
-          > img {
-            @apply block md:max-w-[80%] md:max-h-[60vh];
-          }
-        }
-
-        &.annotated {
-          > .image-container {
-            > div {
-              /* Annotation container created by Annotorious. */
-              @apply align-bottom md:max-w-[80%] md:max-h-[60vh];
-              > img {
-                @apply md:max-w-[100%] md:max-h-[60vh];
-              }
-            }
-          }
-        }
-
-        > figcaption {
-          @apply pt-2 border-t-2 border-dark-500 relative pl-4;
-          &:before {
-            @apply absolute left-0 content-['↑'];
-          }
-        }
-      }
-
-      .admonition {
-        @apply py-2 px-4 mb-1 mt-3 relative;
-
-        &:before {
-          content: attr(aria-label) ": ";
-          @apply absolute -top-2 left-0 pl-4 pr-4 text-xs font-thin ;
-        }
-
-        &.note {
-          @apply bg-sky-100 dark:bg-sky-800 text-sky-800 dark:text-sky-100;
-          &:before {
-            @apply bg-sky-100 dark:bg-sky-800 content-['Note:'];
-          }
-        }
-        &.see-also {
-          @apply bg-emerald-100 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-100;
-          &:before {
-            @apply bg-emerald-100 dark:bg-emerald-800 content-['See_also:'];
-          }
-        }
-
-        > header {
-          @apply font-bold;
-        }
       }
     }
 

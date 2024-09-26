@@ -6,8 +6,10 @@ via :func:`xml2rfc_compat.urls.get_urls()`.
 
 from typing import Dict, List, Tuple, Optional, TypeAlias, Type, Sequence
 import logging
+import re
 
 from django.urls import reverse, NoReverseMatch
+from django.conf import settings
 
 from relaton.models.bibdata import BibliographicItem, DocID
 
@@ -17,9 +19,10 @@ from common.util import get_fuzzy_match_regex
 from main.models import RefData
 from main.query_utils import compose_bibitem
 from main.query import hydrate_relations, search_refs_relaton_field
+from main.query import build_citation_for_docid
 from main.exceptions import RefNotFoundError
 
-from .models import Xml2rfcItem
+from .models import Xml2rfcItem, construct_normalized_xml2rfc_subpath
 
 
 log = logging.getLogger(__name__)
@@ -39,8 +42,14 @@ class Xml2rfcAdapter:
     """
 
     dirname: str
+    """Directory name :data:`xml2rfc_compat.models.dir_subpath_regex`."""
+
     subpath: str
+    """The entire :term:`xml2rfc subpath`, as requested
+    and matched by :data:`xml2rfc_compat.models.dir_subpath_regex`."""
+
     anchor: str
+    """The anchor part of :data:`xml2rfc_compat.models.dir_subpath_regex`."""
 
     resolved_item: Optional[BibliographicItem] = None
     """
@@ -73,13 +82,35 @@ class Xml2rfcAdapter:
         """
         Resolves to bibliographic item.
         """
-        refs = self.fetch_refs()
-        if (num_refs := len(refs)):
-            self.log(f"{num_refs} found")
-            return self.build_bibitem(refs)
-        else:
-            self.log("no refs found")
-            raise RefNotFoundError()
+        if not self.resolved_item:
+            refs = self.fetch_refs()
+            if num_refs := len(refs):
+                self.log(f"{num_refs} found")
+                self.resolved_item = self.build_bibitem_from_refs(refs)
+            else:
+                self.log("no refs found")
+                raise RefNotFoundError()
+        return self.resolved_item
+
+    def resolve_mapped(self) -> Optional[BibliographicItem]:
+        """
+        Resolves to bibliographic item, if mapped.
+
+        :returns: BibliographicItem or None, if none is mapped
+        :raises Xml2rfcItem.DoesNotExist: given subpath doesn’t exist
+        :raises main.exceptions.RefNotFoundError: mapped item is not found
+        :raises pydantic.ValidationError: error constructing mapped item
+        """
+        if not self.resolved_item:
+            if mapped_docid := self.get_mapped_docid():
+                self._mapped_docid = mapped_docid
+                self.log(f"mapped to {mapped_docid}")
+                composite_item = build_citation_for_docid(mapped_docid)
+                self.resolved_item = composite_item
+                return self.resolved_item
+            else:
+                return None
+        return self.resolved_item
 
     def format_anchor(self) -> Optional[str]:
         """
@@ -90,6 +121,22 @@ class Xml2rfcAdapter:
         ``self.resolved_item`` may be available when this method is called.
         """
         return None
+
+    def mangle_anchor(self, anchor: str) -> str:
+        """
+        Performs final anchor mangling,
+        regardless of how the anchor was obtained.
+
+        By default, does minimal substitutions to attempt to comply
+        with ``xs:ID`` schema.
+        """
+        return re.sub(
+            r'^\d',
+            r'_\g<0>',
+            anchor.
+            replace(' ', '.').
+            replace(':', '.')
+        )
 
     @classmethod
     def reverse(
@@ -112,6 +159,18 @@ class Xml2rfcAdapter:
         if (docid := get_primary_docid(item.docid)):
             return [(f'{docid.type}.{docid.id}', None)]
         return []
+
+    def format_log(self) -> str:
+        config_str = self.__class__.__name__
+        try:
+            config_str = '%s: %s' % (
+                config_str,
+                ' -> '.join([i.replace(',', ' ') for i in self._log])
+            )
+        except Exception:
+            return '<unable to format log>'
+        else:
+            return config_str
 
     # Somewhat private/subclass-only
 
@@ -150,10 +209,12 @@ class Xml2rfcAdapter:
         doctype, docid = self.anchor.split('.', 1)
         return DocID(type=doctype, id=f'{doctype} {docid}')
 
-    def build_bibitem(self, refs: Sequence[RefData]) -> BibliographicItem:
+    def build_bibitem_from_refs(
+        self,
+        refs: Sequence[RefData],
+    ) -> BibliographicItem:
         if len(refs) > 0:
             composite_item, valid = compose_bibitem(refs, strict=True)
-            self.resolved_item = composite_item
             # Ensure relations are full
             if valid and composite_item.relation:
                 hydrate_relations(
@@ -165,6 +226,25 @@ class Xml2rfcAdapter:
             return composite_item
         else:
             raise ValueError("No refs given")
+
+    def get_mapped_docid(self) -> Optional[str]:
+        """
+        Returns :term:`document identifier`, if mapped for given subpath
+        (assuming subpath is legacy).
+
+        :returns: str, or None if nothing is mapped.
+        :raises Xml2rfcItem.DoesNotExist: given subpath doesn’t exist
+        """
+        normalized_subpath = construct_normalized_xml2rfc_subpath(
+            self.dirname,
+            self.anchor)
+        try:
+            legacy_path = Xml2rfcItem.objects.get(subpath=normalized_subpath)
+        except Xml2rfcItem.DoesNotExist:
+            legacy_path = Xml2rfcItem.objects.get(subpath=self.subpath)
+        return (
+            (legacy_path.sidecar_meta or {}).
+            get('primary_docid', None))
 
 
 adapters: Dict[str, Type[Xml2rfcAdapter]] = {}
@@ -203,9 +283,13 @@ def make_xml2rfc_url(
             f'xml2rfc_{dirname}',
             args=[subpath],
         )
+
+        _p = request.get_port()
+        port = f':{_p}' if settings.DEBUG and _p not in ['443', '80'] else ''
+        proto = 'http:' if settings.DEBUG else 'https:'
         return (
             subpath,
-            request.build_absolute_uri(url)
+            f"{proto}//{settings.HOSTNAME}{port}/{url.removeprefix('/')}"
             if request else url,
             desc,
         )
@@ -248,18 +332,17 @@ def list_xml2rfc_urls(
         urls.append(url)
 
     # Try adapters’ automatic reversion
-    if not urls:
-        for dirname, adapter_cls in adapters.items():
-            if reversed_anchors := adapter_cls.reverse(item):
-                urls.extend([
-                    url
-                    for anchor, desc in reversed_anchors
-                    if (url := make_xml2rfc_url(
-                        dirname,
-                        f'{dirname}/reference.{anchor}.xml',
-                        desc,
-                        request,
-                    ))
-                ])
+    for dirname, adapter_cls in adapters.items():
+        if reversed_anchors := adapter_cls.reverse(item):
+            urls.extend([
+                url
+                for anchor, desc in reversed_anchors
+                if (url := make_xml2rfc_url(
+                    dirname,
+                    construct_normalized_xml2rfc_subpath(dirname, anchor),
+                    desc,
+                    request,
+                ))
+            ])
 
     return urls

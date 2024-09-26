@@ -33,7 +33,7 @@ def index_xml2rfc_source(
     .. seealso:: :term:`xml2rfc archive source`
     """
 
-    on_progress = on_progress or (lambda total, indexed: None)
+    on_progress = on_progress or (lambda total, indexed: None)  # type: ignore[truthy-function]
 
     if len(work_dirs) > 1:
         raise RuntimeError("Received too many working directories")
@@ -100,7 +100,7 @@ def index_xml2rfc_source(
 
 indexable.register_git_source(
     'xml2rfc',
-    [('https://github.com/ietf-ribose/bibxml-data-archive', 'main')],
+    [('https://github.com/ietf-tools/bibxml-data-archive', 'main')],
 )({
     'indexer': index_xml2rfc_source,
     'count_indexed': Xml2rfcItem.objects.count,

@@ -55,6 +55,7 @@
         text-sm
         input-on-blue
       "
+      required
     >{% if query %}{{ query }}{% endif %}</textarea>
     <ul
       class="
@@ -82,10 +83,8 @@
       {% endfor %}
     </ul>
 
-    <input
-      type="submit"
-      value="Advanced search"
-      class="button"
-    />
+    <button type="submit" class="button">
+        Advanced search
+    </button>
   </form>
 </div>

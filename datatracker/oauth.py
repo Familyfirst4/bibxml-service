@@ -100,11 +100,10 @@ is stored.
 """
 
 
-def context_processor(request):
-    """Adds context variables:
-
-    - ``datatracker_oauth_enabled`` (boolean)
-    - ``datatracker_user``, currently authenticated user info
+def is_datatracker_oauth_enabled() -> bool:
+    """
+    Returns ``True`` if the service is configured with Datatracker
+    OAuth2/OIDC client credentials.
     """
     try:
         _get_redirect_uri()
@@ -112,12 +111,26 @@ def context_processor(request):
         ok = False
     else:
         ok = True if (CLIENT_ID and CLIENT_SECRET) else False
+    return ok
+
+
+def context_processor(request):
+    """Adds context variables:
+
+    - ``datatracker_oauth_enabled`` (boolean)
+    - ``datatracker_user``, currently authenticated user info
+    """
+    enabled = is_datatracker_oauth_enabled()
 
     ctx = dict(
-        datatracker_oauth_enabled=ok,
+        datatracker_auth_required=getattr(
+            settings,
+            'REQUIRE_DATATRACKER_AUTH',
+            False),
+        datatracker_oauth_enabled=enabled,
     )
 
-    if ok and OAUTH_USER_INFO_KEY in request.session:
+    if enabled and OAUTH_USER_INFO_KEY in request.session:
         ctx['datatracker_user'] = request.session[OAUTH_USER_INFO_KEY]
 
     return ctx
@@ -131,22 +144,36 @@ def get_client(request):
 
     As a side effect, if session is not authenticated,
     clears OAuth data from session.
+
+    Will attempt to auto-refresh the token if expired.
     """
 
-    if OAUTH_TOKEN_KEY in request.session:
+    def token_updater(token: str):
+        request.session[OAUTH_TOKEN_KEY] = token
+
+    if is_datatracker_oauth_enabled() and OAUTH_TOKEN_KEY in request.session:
+        provider = get_provider()
         session = OAuth2Session(
             CLIENT_ID,
             scope=OAUTH_SCOPES,
             redirect_uri=_get_redirect_uri(),
-            token=request.session[OAUTH_TOKEN_KEY])
-        provider = get_provider()
+            token=request.session[OAUTH_TOKEN_KEY],
+
+            auto_refresh_url=provider.token_endpoint,
+            auto_refresh_kwargs=dict(
+                client_id=CLIENT_ID,
+                client_secret=CLIENT_SECRET,
+            ),
+            token_updater=token_updater,
+        )
         try:
-            session.get(provider.userinfo_endpoint).json()
+            user_info = session.get(provider.userinfo_endpoint).json()
         except Exception:
-            # Most likely, token expired.
+            log.exception("Unable to retrieve user info")
             clear_session(request)
             return None
         else:
+            request.session[OAUTH_USER_INFO_KEY] = user_info
             return session
     else:
         return None
@@ -226,7 +253,7 @@ def initiate(request):
     # Otherwise, will be stored in session to internally redirect the user
     # after OAuth callback.
 
-    if not CLIENT_ID or not CLIENT_SECRET:
+    if not is_datatracker_oauth_enabled():
         log.warning(
             "Datatracker OAuth2: client ID/secret not configured, "
             "redirecting to home")
@@ -277,10 +304,10 @@ def handle_callback(request):
         OAUTH_INITIATED_FROM_URL_KEY,
         get_default_post_oauth_redirect_url())
 
-    if not CLIENT_ID or not CLIENT_SECRET:
+    if not is_datatracker_oauth_enabled():
         log.warning(
-            "Datatracker OAuth2 callback: client ID/secret not configured, "
-            "redirecting to home")
+            "Datatracker OAuth2 callback: Datatracker OAuth2 misconfigured, "
+            "redirecting the user to home")
         messages.error(
             request,
             "Couldn’t authenticate with Datatracker: "
@@ -398,7 +425,7 @@ def get_provider() -> ProviderInfo:
         return ProviderInfo(**data)
 
 
-DEFAULT_PROVIDER = ProviderInfo(**{
+DEFAULT_PROVIDER = ProviderInfo(**{  # type: ignore
     "issuer": "https://auth.ietf.org/api/openid",
     "authorization_endpoint": "https://auth.ietf.org/api/openid/authorize",
     "token_endpoint": "https://auth.ietf.org/api/openid/token",

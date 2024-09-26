@@ -1,7 +1,7 @@
 {% extends "browse/base.html" %}
 {# Main details template for a bibliographic item. #}
 
-{% load common static %}
+{% load common %}
 
 {% block title %}
   {{ block.super }}
@@ -11,10 +11,6 @@
     —
   {% endwith %}
   {% include "relaton/smart_title.html" with bibitem=data plain_only=1 %}
-{% endblock %}
-
-{% block extra_scripts %}
-  <script src="{% static "js/xml2rfc-path-widget.js" %}"></script>
 {% endblock %}
 
 {% block content_grid_classes %}
@@ -129,7 +125,7 @@
     {% endwith %}
   </header>
 
-  {% if datatracker_oauth_enabled %}
+  {% if datatracker_oauth_enabled or not datatracker_auth_required %}
     <div class="
       md:col-span-2 mb-4 md:mb-0
       z-20
@@ -141,6 +137,7 @@
       md:justify-end
       px-2
       tracking-tight
+      text-sm
     ">
       {% include "citation/export.html" with xml2rfc_urls=xml2rfc_urls available_serialization_formats=available_serialization_formats docid=data.docid|as_list|first datatracker_user=datatracker_user only %}
     </div>

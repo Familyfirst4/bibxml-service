@@ -1,21 +1,23 @@
 """Responsible for Crossref interaction."""
-
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from crossref.restful import Works, Etiquette
-
 from django.conf import settings
+from django.core.cache import cache
+from relaton.models import Date
+from relaton.models.bibdata import Contributor, Role, DocID
+from relaton.models.bibitemlocality import Locality, LocalityStack
+from relaton.models.links import Link
+from relaton.models.orgs import Organization
+from relaton.models.people import FullName, GivenName, Forename
+from relaton.models.people import Person, PersonAffiliation
+from relaton.models.strings import GenericStringValue, Title
 
+from bib_models import construct_bibitem
+from bibxml.settings import DEFAULT_CACHE_SECONDS
 from common.util import as_list
-
-from bib_models import construct_bibitem, DocID
-from bib_models import Title, Contributor, Organization
-from bib_models import Person, PersonAffiliation, PersonName
-from bib_models import GenericStringValue, Link
-
-from main.types import ExternalBibliographicItem, ExternalSourceMeta
 from main.exceptions import RefNotFoundError
-
+from main.types import ExternalBibliographicItem, ExternalSourceMeta
 
 etiquette = Etiquette(
     settings.SERVICE_NAME,
@@ -26,6 +28,10 @@ etiquette = Etiquette(
 """Etiquette info to be used when making Crossref API requests."""
 
 works = Works(etiquette=etiquette)
+
+ACCEPTED_DATE_TYPES = ["published", "accessed", "created", "implemented", "obsoleted",
+                       "confirmed", "updated", "issued", "transmitted", "copied", "unchanged",
+                       "circulated", "adapted", "vote-started", "vote-ended", "announced"]
 
 
 def get_bibitem(docid: DocID, strict: bool = True) \
@@ -48,10 +54,15 @@ def get_bibitem(docid: DocID, strict: bool = True) \
             "DOI source requires DOI docid.type",
             repr(docid))
 
-    resp = works.doi(docid.id)
-
+    resp = cache.get(f'DOI_{docid.id}')
     if not resp:
-        raise RefNotFoundError()
+        resp = works.doi(docid.id)
+        if not resp:
+            raise RefNotFoundError("There was a problem retrieving DOI data. "
+                                   "This can be caused by an invalid id or by "
+                                   "Crossref (the service we retrieve DOI data "
+                                   "from) being unavailable at the moment. Try again later!")
+        cache.set(f'DOI_{docid.id}', resp, DEFAULT_CACHE_SECONDS)
 
     docids: List[DocID] = [
         DocID(type='DOI', id=resp['DOI']),
@@ -74,11 +85,11 @@ def get_bibitem(docid: DocID, strict: bool = True) \
         *(to_contributor('chair', chair)
           for chair in resp.get('chair', [])),
     ]
-    if 'publisher' in resp:
+    if publisher := resp.get('publisher', '').strip():
         contributors.append(Contributor(
-            role=['publisher'],
+            role=[Role(type='publisher')],
             organization=Organization(
-                name=resp.get('publisher'),
+                name=GenericStringValue(content=publisher),
             ),
         ))
 
@@ -91,6 +102,38 @@ def get_bibitem(docid: DocID, strict: bool = True) \
           for title in as_list(resp.get(tid, []))
           if tid in resp),
     ]
+
+    # LocalityStack
+    container_title = resp.get('container-title')
+    extent: Optional[LocalityStack]
+    if container_title:
+        localities: List[Locality] = [
+            Locality(
+                type='container-title',
+                reference_from=container_title[0],
+            ),
+        ]
+        if volume := resp.get('volume', None):
+            localities.append(Locality(type='volume', reference_from=volume))
+        if issue := resp.get('journal-issue', {}).get('issue', None):
+            localities.append(Locality(type='issue', reference_from=issue))
+        if page := resp.get('page', None):
+            localities.append(Locality(type='page', reference_from=page))
+
+        extent = LocalityStack(locality=localities)
+    else:
+        extent = None
+
+    dates = []
+    for date_type in ACCEPTED_DATE_TYPES:
+        if resp.get(date_type):
+            date_parts = resp.get(date_type).get('date-parts')
+            for _part in date_parts:
+                if isinstance(_part[0], int):
+                    date = "%04d" % _part[0]
+                    for _i in _part[1:]:
+                        date += "-%02d" % _i
+                    dates.append(Date(type=date_type, value=date))
 
     data = dict(
         # The following are not captured:
@@ -117,6 +160,8 @@ def get_bibitem(docid: DocID, strict: bool = True) \
             'format': 'application/x-jats+xml',  # See GitHub issue 210
         }] if 'abstract' in resp else [],
         contributor=contributors,
+        extent=extent,
+        date=dates
     )
 
     bibitem, errors = construct_bibitem(data, strict)
@@ -142,7 +187,7 @@ def to_contributor(role: str, crossref_author: Dict[str, Any]) \
     :rtype: relaton.models.bibdata.Contributor
     """
     return Contributor(
-        role=[role],
+        role=[Role(type=role)],
         person=Person(
             affiliation=[PersonAffiliation(
                 organization=Organization(
@@ -153,16 +198,16 @@ def to_contributor(role: str, crossref_author: Dict[str, Any]) \
                     abbreviation=None,
                 ),
             ) for aff in crossref_author['affiliation']],
-            name=PersonName(
+            name=FullName(
                 surname=GenericStringValue(
                     content=crossref_author['family'],
                 ) if 'family' in crossref_author else None,
                 completename=GenericStringValue(
                     content=crossref_author['name'],
                 ) if 'name' in crossref_author else None,
-                forename=[GenericStringValue(
+                given=GivenName(forename=[Forename(
                     content=crossref_author['given'],
-                )] if 'given' in crossref_author else [],
+                )] if 'given' in crossref_author else [])
             ),
         ),
     )

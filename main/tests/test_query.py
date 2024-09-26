@@ -6,7 +6,6 @@ from unittest import TestCase
 from django.core.management import call_command
 from django.db.models import QuerySet, Q
 
-from bib_models import DocID
 from main.exceptions import RefNotFoundError
 from main.models import RefData
 from main.query import (
@@ -79,7 +78,7 @@ class QueryTestCase(TestCase):
         Test that search_refs_relaton_struct returns an empty list of
         results when called with an empty list of objs.
         """
-        objs: List[None] = []
+        objs: List[Any] = []
         refs = search_refs_relaton_struct(*objs)
         self.assertIsInstance(refs, QuerySet[RefData])
         self.assertEqual(refs.count(), 0)
@@ -128,9 +127,8 @@ class QueryTestCase(TestCase):
         The function build_citation_for_docid should :raise RefNotFoundError:
         if a combination of non-existing id and reference is passed as parameter.
         """
-        id, doctype = "NONEXISTENTID", "NONEXISTENTTYPE"
         with self.assertRaises(RefNotFoundError):
-            build_citation_for_docid(id, doctype)
+            build_citation_for_docid("nonexistentid", "nonexistenttype")
 
     def test_build_citation_for_docid_strict_is_false(self):
         """
@@ -168,7 +166,7 @@ class QueryTestCase(TestCase):
         """
         refs = search_refs_relaton_field(
             {
-                "docid[*]": '@.id == "%s"' % re.escape("NONEXISTENTID"),
+                "docid[*]": '@.id == "%s"' % "NONEXISTENTID",
             },
             exact=True,
         )

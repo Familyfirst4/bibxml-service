@@ -53,10 +53,10 @@ DATASET_SOURCE_OVERRIDES = getattr(
     'DATASET_SOURCE_OVERRIDES',
     {})
 
-DEFAULT_DATASET_REPO_URL_TEMPLATE = getattr(
+DEFAULT_DATASET_REPO_URL_TEMPLATE = cast(str, getattr(
     settings,
     'DEFAULT_DATASET_REPO_URL_TEMPLATE',
-    None)
+    None))
 
 DEFAULT_DATASET_REPO_BRANCH = getattr(
     settings,
@@ -244,11 +244,14 @@ def index_dataset(ds_id, relaton_path, refs=None,
                                 normalize_relaxed(ref_data)
                                 BibliographicItem(**ref_data)
                             except Exception:
-                                on_error(ref, err_desc)
+                                on_error(
+                                    ref,
+                                    'Errors not resolved:\n%s' % err_desc)
                             else:
                                 on_error(
                                     ref,
-                                    'resolved (normalized):\n%s' % err_desc)
+                                    'Errors resolved (normalized):\n%s'
+                                    % err_desc)
 
                     RefData.objects.update_or_create(
                         ref=ref,

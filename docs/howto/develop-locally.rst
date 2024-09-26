@@ -8,6 +8,13 @@ How to develop locally
 Setting up
 ==========
 
+Clone the repository. Ensure you have the tags fetched
+(if you have cloned a fork, they may not be fetched by default;
+``git fetch --all`` should address that).
+
+Requirements
+------------
+
 You will need Docker and Docker Compose.
 Configuration entry point lives in ``docker-compose.yml``
 at the root of the repository.
@@ -51,10 +58,11 @@ Building base image
       DB_NAME=bibxml
       DB_SECRET=qwert
       DJANGO_SECRET=FDJDSLJFHUDHJCTKLLLCMNII(****#TEFF
-      HOST=localhost
+      HOST_NAME=localhost
       API_SECRET=test
       SERVICE_NAME=IETF BibXML service
       CONTACT_EMAIL=<ops contact email>
+      SOURCE_REPO_URL=https://github.com/ietf-tools/bibxml-service
       DEBUG=1
 
    .. warning:: This environment is not suitable for production use.
@@ -92,6 +100,11 @@ Running the service
 
 To simply serve the BibXML service, run ``docker compose up``.
 
+.. note:: If you get an *error* regarding missing ``SNAPSHOT`` variable,
+          check that your local Git repository has the tags fetched.
+          This variable is populated from latest Git tag and is used
+          to display service version in certain places.
+
 Web front-end should be available under ``localhost:8000``.
 API spec should be available under ``localhost:8000/api/v1``.
 
@@ -101,6 +114,11 @@ for better development experience you can run the command this way instead::
     docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 This will mount source code directory and enable hot reload on changes.
+
+.. note:: ``celery`` container will not be reloaded.
+          If iterating on logic that runs as part of an async task
+          (including, e.g., ``handle_index()`` in :mod:`sources.indexable`),
+          you’ll have to Ctrl+C stop and restart Compose.
 
 If you want to run the service together with monitoring helper services,
 run this::
@@ -134,8 +152,17 @@ Docker Compose will automatically reload the code for you.
 
 In addition, make sure to build documentation,
 make sure any new units are documented and all cross-references
-(including the previously existing ones) resolve. Pay attention
-to any new warnings during documentation generation, some warnings
+(including the previously existing ones) resolve.
+
+Documenting
+-----------
+
+Whenever you work on something, or ideally before you start doing that,
+update documentation to reflect your changes. For example, if you are renaming
+a unit or a variable, make sure to ``grep`` or ``git grep`` to find any references
+to it in the documentation and update them accordingly.
+
+Pay attention to any new warnings during documentation generation, some warnings
 are unavoidable but a new warning may indicate a broken cross-reference.
 
 Linting
@@ -178,7 +205,7 @@ The code can be debugged using an interactive tool such as ``ipdb``.
 The environment is already setup to accept stdin interactions.
 
 If you are running Docker using the command line, all you have to do is
-install ``ipdb`` in your container::
+install ``ipdb`` in your running container::
 
     docker-compose exec web pip install ipdb
 
@@ -196,3 +223,27 @@ Marking new release
 -------------------
 
 See :doc:`/howto/mark-releases`.
+
+
+Working on Python dependencies
+------------------------------
+
+If you are working on, for example, ``relaton-py``
+and want to test it in context of this service,
+you may want to be able to make changes to it on your host system
+but also have those changes reflected in container at runtime
+without publishing the package.
+
+One way to achieve that is by:
+
+1. Placing ``relaton-py`` repository root as a sibling of this service’s
+   repository root.
+2. Mounting package root (where top-level ``__init__.py`` resides)
+   directly into the container by adding the following entry
+   to ``web.volumes`` in project’s Compose file
+   (for development only without committing, of course)::
+
+       - ../relaton-py/relaton:/usr/local/lib/python3.10/site-packages/relaton:ro
+
+.. note:: Make sure the parent directory is set up to be available to containers
+          in Docker Desktop resource sharing preferences.

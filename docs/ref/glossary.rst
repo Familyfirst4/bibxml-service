@@ -17,38 +17,30 @@ Glossary
 
        Can either be an :term:`indexable source` or an :term:`external source`.
 
+   Relaton format
+       The normalized format used to store bibliographic data internally.
+       See :doc:`/topics/relaton-format`.
+
    BibXML format
        XML using schema defined
        by `RFC 7991 <https://datatracker.ietf.org/doc/html/rfc7991>`_
        or newer `Xml2rfc vocabulary <https://xml2rfc.tools.ietf.org/xml2rfc-doc.html>`_.
 
    indexable source
-       An external data source periodically compiled by external tools
-       from authoritative source(s).
-       Has to be indexed in order for the data to become
-       retrievable using this service.
-
-       An indexable source must be registered and associated with
-       the function that handles the indexing via
-       :func:`sources.indexable.register_git_source()`.
-       After that, it appears in management GUI and API
-       and its indexing can be queued.
-
-       Currently, an indexable source must be a Git repository.
-
-       Examples: Relaton sources registered in :mod:`main.sources`;
-       xml2rfc mirror data source registered in :mod:`xml2rfc_compat.source`.
+       See :doc:`/topics/sourcing` for details.
 
    indexed source
        An :term:`indexable source` that has been indexed.
 
    reference
    ref
-       Name of an entry in an :term:`indexed source`.
-       Unique per source.
+       An entry in an :term:`indexed source`,
+       or the name of such an entry (e.g., filename in a Git repository).
 
-       In case of Relaton sources, references
-       correspond to :class:`main.models.RefData` instances.
+       The name is unique per source.
+
+       In case of Relaton sources, reference data
+       is indexed as :class:`main.models.RefData` instances.
 
        .. note:: Being a dataset-specific reference (such as a filename),
                  it is not expected to be known by the user. Hence, user searches
@@ -62,23 +54,15 @@ Glossary
 
    external source
    external dataset
-       A :term:`bibliographic data source`
-       that allows to retrieve individual bibliographic items
-       given :term:`document identifier`.
-       Retrieval incurs a network request to external service
-       and the cost of on-the-fly conversion to Relaton and optionally requested
-       serialization format.
-
-       Example: Crossref is an external source that allows to look up
-       bibliographic items via DOI (see :mod:`doi`).
-
-       Register external sources using
-       :func:`main.external_sources.register_for_types()`.
+       See :ref:`sourcing-external-sources` for details.
 
    xml2rfc-style path
    legacy path
        A path that used to be handled by xml2rfc tools web server.
        (Normally points to an XML file.)
+
+       Usually means the part of the URL *excluding*
+       domain name and leading :data:`bibxml.settings.XML2RFC_PATH_PREFIX`.
 
        .. seealso::
 
@@ -91,12 +75,17 @@ Glossary
       An :term:`indexable source` (living in a Git repository)
       that contains two kinds of data:
 
+      (Not really a mirror, since its contents are not supposed
+      to receive any updates.)
+
       - Original XML files as served by xml2rfc tools web server.
 
         These files are supposed to be periodically overwritten using rsync
         from rsync mirror.
 
       - :term:`Optional “sidecar” YAML files <xml2rfc sidecar metadata file>`.
+
+      Read more in :ref:`sourcing-xml2rfc-archive`.
 
       .. seealso:: :mod:`xml2rfc_compat.source`
 
@@ -118,6 +107,14 @@ Glossary
          - :class:`xml2rfc_compat.types.Xml2rfcPathMetadata`
 
 
+   xml2rfc dirname
+      For an :term:`xml2rfc-style path` like ``/public/rfc/bibxml3/reference.foo.bar.xml``,
+      this is the “bibxml3” part.
+
+      Some dirnames have aliases: e.g., ``bibxml4`` is equivalent to ``bibxml-w3c``.
+
+      .. seealso:: :mod:`xml2rfc_compat.aliases`, :data:`bibxml.settings.XML2RFC_COMPAT_DIR_ALIASES`
+
    anchor
    xml2rfc anchor
       Used to mean two different strings, which may be the same
@@ -129,7 +126,7 @@ Glossary
         element in BibXML.
 
    xml2rfc adapter
-      A set of functions registered and associated with a top-level xml2rfc subpath
+      A set of functions registered and associated with :term:`xml2rfc dirname`
       via :func:`xml2rfc_compat.adapters.register_adapter`.
 
       Generally should be a :class:`xml2rfc_compat.adapters.Xml2rfcAdapter` subclass.

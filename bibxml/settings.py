@@ -1,6 +1,5 @@
-from typing import List, Dict, Callable
+from typing import List, Optional, cast
 from pathlib import Path
-import re
 from os import environ, path
 import socket
 
@@ -41,7 +40,9 @@ SOURCE_REPOSITORY_URL = environ.get("SOURCE_REPO_URL", None)
 SERVICE_NAME = environ.get("SERVICE_NAME")
 """Service title (short phrase)."""
 
-HOSTNAME = environ.get("PRIMARY_HOSTNAME")
+# Always a string, since missing environment variable
+# will cause preceding checks to fail.
+HOSTNAME: str = cast(str, environ.get("PRIMARY_HOSTNAME"))
 """Primary hostname the service is publicly deployed under."""
 
 
@@ -99,8 +100,8 @@ if environ.get("SENTRY_DSN", None):
         integrations=[
             DjangoIntegration(),
             LoggingIntegration(
-                level=logging.INFO,
-                event_level=logging.WARNING,
+                level=logging.ERROR,
+                event_level=logging.ERROR,
             ),
         ],
         server_name=HOSTNAME,
@@ -169,13 +170,11 @@ WSGI_APPLICATION = 'bibxml.wsgi.application'
 
 CSRF_USE_SESSIONS = True
 
+CSRF_TRUSTED_ORIGINS = [f'https://{HOSTNAME}']
 if DEBUG:
-    CSRF_TRUSTED_ORIGINS = ['http://localhost:8000']
-    SESSION_COOKIE_DOMAIN = 'localhost'
-else:
-    CSRF_TRUSTED_ORIGINS = [f'https://{HOSTNAME}']
-    SESSION_COOKIE_DOMAIN = HOSTNAME
+    CSRF_TRUSTED_ORIGINS.append(f'http://{HOSTNAME}')
 
+SESSION_COOKIE_DOMAIN = HOSTNAME
 
 # Database
 
@@ -352,6 +351,20 @@ DATATRACKER_REDIRECT_URI = environ.get(
    since Datatracker’s redirect would not be handled by this service.
 """
 
+REQUIRE_DATATRACKER_AUTH = int(
+    environ.get("REQUIRE_DATATRACKER_AUTH", default=0)
+) == 1
+"""
+If ``True``:
+
+- Public API requires either Datatracker developer’s token HTTP header,
+  or valid Datatracker OAuth2 access token in UA session
+- Bibitem export links are not shown in GUI unless the user is logged in
+  via Datatracker
+
+.. seealso:: :doc:`/topics/auth`
+"""
+
 
 # Custom
 
@@ -374,6 +387,20 @@ a more precise query."""
 DATASET_TMP_ROOT = environ.get('DATASET_TMP_ROOT', '/data/datasets')
 """Where to keep fetched source data and data generated during indexing.
 Should be a directory. No trailing slash."""
+
+AUTO_REINDEX_INTERVAL: Optional[int] = int(
+    environ.get(
+        'AUTO_REINDEX_INTERVAL',
+        '',
+    ).strip() or '0'
+) or None
+"""
+The :term:`indexable source` reindex task
+will be periodically ran this amount of seconds
+using Celery beat scheduler.
+
+.. seealso:: :doc:`/howto/auto-reindex-sources`
+"""
 
 
 # API access
@@ -471,6 +498,9 @@ XML2RFC_COMPAT_DIR_ALIASES = {
 }
 """Maps dirname to a list of aliases to reflect
 IETF xml2rfc web server behavior.
+
+The key should be the name of a directory exactly as it appears
+in :term:`xml2rfc archive source`; the value should be a list of aliases.
 """
 
 XML2RFC_PATH_PREFIX = 'public/rfc/'
@@ -478,16 +508,4 @@ XML2RFC_PATH_PREFIX = 'public/rfc/'
 This prefix is subtracted from further resolution.
 
 Must have trailing slash, but no leading slash.
-"""
-
-
-# Other
-# -----
-
-AUTHORITATIVE_DATASETS = [
-    'rfcs',
-    'ids',
-    'rfcsubseries',
-]
-"""A list of authoritative datasets.
 """

@@ -24,7 +24,7 @@ class RefData(models.Model):
         help_text="Internal dataset ID.",
         db_index=True)
     """
-    Which dataset given citation was indexed from.
+    Which dataset given bibliographic item was indexed from.
     Matches indexable source ID in :any:`RELATON_DATASETS`.
     """
 
@@ -39,10 +39,11 @@ class RefData(models.Model):
     """
 
     body = models.JSONField()
-    """Contains canonical Relaton representation
+    """Canonical Relaton representation
     of :term:`bibliographic item`.
     Can be used to construct
     a :class:`relaton.models.bibdata.BibliographicItem` instance.
+    May be normalized.
     """
 
     latest_date = models.DateField()

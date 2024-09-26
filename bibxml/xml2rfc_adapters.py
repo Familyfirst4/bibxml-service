@@ -1,24 +1,24 @@
 """
 Defines adapters for xml2rfc paths. See :term:`xml2rfc adapter`.
 """
-
-from typing import Optional, List, cast, Sequence
 import logging
 import re
+import urllib
+from typing import Optional, List, cast, Sequence
+from urllib.parse import urlparse
 
 from relaton.models.bibdata import BibliographicItem, DocID, VersionInfo
 
 from bib_models.util import get_primary_docid
-from doi.crossref import get_bibitem as get_doi_bibitem
+from common.util import as_list
 from datatracker.internet_drafts import get_internet_draft
 from datatracker.internet_drafts import remove_version
+from doi.crossref import get_bibitem as get_doi_bibitem
+from main.exceptions import RefNotFoundError
 from main.models import RefData
 from main.query import search_refs_relaton_field
-from main.exceptions import RefNotFoundError
-
-from xml2rfc_compat.adapters import register_adapter
 from xml2rfc_compat.adapters import ReversedRef, Xml2rfcAdapter
-
+from xml2rfc_compat.adapters import register_adapter
 
 log = logging.getLogger(__name__)
 
@@ -26,8 +26,7 @@ log = logging.getLogger(__name__)
 @register_adapter('bibxml')
 class RfcAdapter(Xml2rfcAdapter):
     """
-    Resolves RFC paths.
-    Straightforward case.
+    Adapts RFC paths. Straightforward case of string replacement.
     """
     exact_docid_match = True
 
@@ -51,9 +50,12 @@ class RfcAdapter(Xml2rfcAdapter):
 
     def resolve_docid(self) -> Optional[DocID]:
         parts = self.anchor.split('.')
-        raw_num = parts[1]
-        rfc_num = int(raw_num)
-        return DocID(type="IETF", id=f"RFC {rfc_num}")
+        if parts[0] == 'RFC':
+            raw_num = parts[1]
+            rfc_num = int(raw_num)
+            return DocID(type="IETF", id=f"RFC {rfc_num}")
+        else:
+            return None
 
 
 @register_adapter('bibxml2')
@@ -61,6 +63,7 @@ class MiscAdapter(Xml2rfcAdapter):
     """
     Resolves misc paths. ID is fuzzy matched.
     """
+
     IGNORE_DOCTYPES = set([
         'IANA',
         'W3C',
@@ -73,9 +76,12 @@ class MiscAdapter(Xml2rfcAdapter):
     """These doctypes will not be reversed.
     It’s expected that they will be reversed by other, more specific adapters.
 
-    (So that, e.g., for a W3C doc, user won’t get a bibxml-misc path
-    but a bibxml4 path.)
+    (So that, e.g., for a W3C doc, user won’t see a bibxml-misc path
+    in addition to bibxml4 path.)
     """
+
+    def format_anchor(self):
+        return self.anchor
 
     @classmethod
     def reverse(cls, item: BibliographicItem) -> List[ReversedRef]:
@@ -100,10 +106,19 @@ class InternetDraftsAdapter(Xml2rfcAdapter):
 
     .. seealso:: :issue:`157`
     """
+
     anchor_is_valid: bool
     bare_anchor: str
     unversioned_anchor: str
     requested_version: Optional[str]
+
+    def format_anchor(self):
+        """
+        Returns a string like ``I-D.foo-bar``,
+        if full ID is e.g. ``draft-foo-bar-00``.
+        This is in line with preexisting xml2rfc tools behavior.
+        """
+        return f"I-D.{self.unversioned_anchor}"
 
     @classmethod
     def get_bare_i_d_docid(self, item: BibliographicItem) -> Optional[str]:
@@ -167,7 +182,7 @@ class InternetDraftsAdapter(Xml2rfcAdapter):
         else:
             query = (
                 '(@.type == "Internet-Draft") && '
-                r'(@.id like_regex "%s[\d+]")'
+                r'(@.id like_regex "%s[[:digit:]]{2}")'
                 % re.escape(f'draft-{unversioned}-')
             )
             self.log(f"using query {query}")
@@ -198,7 +213,7 @@ class InternetDraftsAdapter(Xml2rfcAdapter):
 
         # Look up by primary identifier
         try:
-            indexed_bibitem = self.build_bibitem(self.fetch_refs())
+            indexed_bibitem = self.build_bibitem_from_refs(self.fetch_refs())
         except Exception:
             log.exception(
                 "Failed to obtain or validate indexed bibliographic item "
@@ -216,96 +231,103 @@ class InternetDraftsAdapter(Xml2rfcAdapter):
                 "lacks I-D version", self.anchor)
             indexed_version = None
 
-        # Check Datatracker’s latest version (slow)
-        try:
-            dt_bibitem = get_internet_draft(
-                f'draft-{self.bare_anchor}',
-                strict=indexed_bibitem is None,
-            ).bibitem
+        dt_version: Optional[str] = None
+        dt_bibitem: Optional[BibliographicItem] = None
 
-            if len(dt_bibitem.version or []) > 0:
-                dt_version = dt_bibitem.version[0].draft
-                if not isinstance(dt_version, str):
-                    raise ValueError(
-                        "Malformed I-D version (not a string): "
-                        f"{dt_version}")
-                try:
-                    parsed_version = int(dt_version)
-                except (ValueError, TypeError):
-                    raise ValueError(
-                        "Malformed I-D version (doesn’t parse to an integer): "
-                        f"{dt_version}")
-                else:
-                    if parsed_version < 0:
+        if not (self.requested_version and self.requested_version == indexed_version):
+            # Check Datatracker’s latest version (slow)
+            # when request is unversioned or requested version is not indexed
+            try:
+                dt_bibitem = get_internet_draft(
+                    f'draft-{self.bare_anchor}',
+                    strict=indexed_bibitem is None,
+                ).bibitem
+
+                if dt_bibitem and dt_bibitem.version and len(dt_bibitem.version) > 0:
+                    dt_version = dt_bibitem.version[0].draft
+                    if not isinstance(dt_version, str):
                         raise ValueError(
-                            "Malformed I-D version (not a positive integer): "
+                            "Malformed I-D version (not a string): "
                             f"{dt_version}")
-            else:
-                raise ValueError("Missing I-D version")
+                    try:
+                        parsed_version = int(dt_version)
+                    except (ValueError, TypeError):
+                        raise ValueError(
+                            "Malformed I-D version (doesn’t parse to an integer): "
+                            f"{dt_version}")
+                    else:
+                        if parsed_version < 0:
+                            raise ValueError(
+                                "Malformed I-D version (not a positive integer): "
+                                f"{dt_version}")
+                else:
+                    raise ValueError("Missing I-D version")
 
-        except Exception:
-            log.exception(
-                "Failed to fetch or validate latest draft from Datatracker "
-                "when resolving xml2rfc bibxml3 path")
-        else:
-            # Conditions for falling back to Datatracker’s response.
-            # We want to prefer indexed items in general, because they tend to
-            # provide more complete data, but in some cases we have no choice
-            # but to fall back.
-            if any([
-                # We were not requested a version
-                not self.requested_version,
-                # We were requested a version and we got that version
-                # from Datatracker
-                self.requested_version == dt_version,
-            ]) and any([
-                # We did not find indexed item matching given ID
-                # and maybe version:
-                not indexed_bibitem,
-                # We were not requested a version,
-                # and latest version on Datatracker is different
-                # (assuming newer):
-                not self.requested_version
-                and indexed_version != dt_version,
-                # We were requested a version,
-                # and somehow indexed version does not match requested version:
-                self.requested_version
-                and indexed_version != self.requested_version,
-            ]):
-                # Datatracker’s version is newer
-                # or we don’t have this draft indexed.
-                # Note this (should be transient until sources are reindexed,
-                # if not then there’s a problem)
-                # and return Datatracker’s version
-                log.warn(
-                    "Returning Datatracker result for xml2rfc bibxml3 path. "
-                    "If unversioned I-D was requested, "
-                    "then Datatracker may have a newer I-D version "
-                    "than indexed sources. "
-                    "Alternatively, indexed version could not be used "
-                    "for some reason. "
-                    "Requested version %s, "
-                    "indexed sources have version %s, "
-                    "returning Datatracker’s version %s. ",
-                    self.requested_version,
-                    indexed_version,
-                    dt_version)
-                return dt_bibitem
-
-        if indexed_bibitem and any([
+            except Exception:
+                log.exception(
+                    "Failed to fetch or validate latest draft from Datatracker "
+                    "when resolving xml2rfc bibxml3 path")
+        # Conditions for falling back to Datatracker’s response.
+        # We want to prefer indexed items in general, because they tend to
+        # provide more complete data, but in some cases we have no choice
+        # but to fall back.
+        if any([
+            # We were not requested a version
             not self.requested_version,
-            indexed_version == self.requested_version,
+            # We were requested a version and we got that version
+            # from Datatracker
+            self.requested_version == dt_version,
+        ]) and any([
+            # We did not find indexed item matching given ID
+            # and maybe version:
+            not indexed_bibitem,
+            # We were not requested a version,
+            # and latest version on Datatracker is different
+            # (assuming newer):
+            not self.requested_version
+            and indexed_version != dt_version,
+            # We were requested a version,
+            # and somehow indexed version does not match requested version:
+            self.requested_version
+            and indexed_version != self.requested_version,
         ]):
-            return indexed_bibitem
-        else:
-            raise RefNotFoundError()
+            # Datatracker’s version is newer
+            # or we don’t have this draft indexed.
+            # Note this (should be transient until sources are reindexed,
+            # if not then there’s a problem)
+            # and return Datatracker’s version
+            self.log(f"returning Datatracker version {dt_version}")
+            log.warn(
+                "Returning Datatracker result for xml2rfc bibxml3 path. "
+                "If unversioned I-D was requested, "
+                "then Datatracker may have a newer I-D version "
+                "than indexed sources. "
+                "Alternatively, indexed version could not be used "
+                "for some reason. "
+                "Requested version %s, "
+                "indexed sources have version %s, "
+                "returning Datatracker’s version %s. ",
+                self.requested_version,
+                indexed_version,
+                dt_version)
+            self.resolved_item = dt_bibitem
+
+        if not self.resolved_item:
+            if indexed_bibitem and any([
+                not self.requested_version,
+                indexed_version == self.requested_version,
+            ]):
+                self.resolved_item = indexed_bibitem
+            else:
+                raise RefNotFoundError()
+
+        return self.resolved_item
 
 
 @register_adapter('bibxml4')
 class W3cAdapter(Xml2rfcAdapter):
     """
-    Resolves W3C paths. Currently, there could be false positives
-    as dates appended to the end of xml2rfc filename are ignored.
+    Resolves W3C paths.
     """
     @classmethod
     def reverse(self, item: BibliographicItem) -> List[ReversedRef]:
@@ -316,23 +338,29 @@ class W3cAdapter(Xml2rfcAdapter):
 
     # def get_docid_query(self) -> Optional[str]:
 
+    def format_anchor(self):
+        return self.anchor
+
     def resolve_docid(self) -> DocID:
-        unprefixed = (
-            self.anchor.
-            removeprefix('W3C.').
-            removeprefix('NOTE-').
-            removeprefix('SPSR-').
-            removeprefix('CR-').
-            removeprefix('PR-').
-            removeprefix('WD-'))
-        # We throw away trailing date, because available sources
+        unprefixed = self.anchor.removeprefix('W3C.')
+        # We can try combinations w/o trailing date and/or leading doctype
+        # for a fuzzy match:
+        # untyped = (
+        #     unprefixed.
+        #     removeprefix('NOTE-').
+        #     removeprefix('SPSR-').
+        #     removeprefix('REC-').
+        #     removeprefix('CR-').
+        #     removeprefix('PR-').
+        #     removeprefix('WD-'))
         # appear to not have the old versions in bibxml-w3c.
-        without_trailing_date = re.sub(r'\-[\d]{8}$', '', unprefixed)
-        return DocID(type="W3C", id=f'W3C {without_trailing_date}')
+        # undated_untyped = re.sub(r'\-[\d]{8}$', '', untyped)
+        # undated = re.sub(r'\-[\d]{8}$', '', unprefixed)
+        return DocID(type="W3C", id=f'W3C {unprefixed}')
 
 
 @register_adapter('bibxml5')
-class ThreeGPPPAdapter(Xml2rfcAdapter):
+class ThreeGPPAdapter(Xml2rfcAdapter):
     """
     This scheme is very simple, and looks like ``[SDO-]3GPP.NN.MMM``.
     They in fact resolve to 3GPP TR or TS, followed by ``NN.MMM:Rel-...``,
@@ -341,15 +369,20 @@ class ThreeGPPPAdapter(Xml2rfcAdapter):
     """
 
     @classmethod
-    def reverse(self, item: BibliographicItem) -> List[ReversedRef]:
+    def resolve_num(cls, item: BibliographicItem) -> Optional[str]:
         if ((docid := get_primary_docid(item.docid))
                 and docid.type == '3GPP'):
-            num = (
+            return (
                 docid.id.split(':')[0].
                 removeprefix('3GPP ').
                 removeprefix('TS ').
                 removeprefix('TR ').
                 replace(' ', '.'))
+        return None
+
+    @classmethod
+    def reverse(cls, item: BibliographicItem) -> List[ReversedRef]:
+        if (num := cls.resolve_num(item)):
             return [
                 (f"3GPP.{num}", None),
                 (f"SDO-3GPP.{num}", None),
@@ -367,8 +400,17 @@ class ThreeGPPPAdapter(Xml2rfcAdapter):
         self.log(f"using query {query}")
         return search_refs_relaton_field({
             'docid[*]': query,
-        }, limit=10, exact=True)
-        return []
+            'date[*]': '@.type == "published"',
+        }, limit=1, exact=True)
+
+    def format_anchor(self) -> str:
+        if self.resolved_item is not None:
+            if num := self.resolve_num(self.resolved_item):
+                return f'SDO-3GPP.{num}'
+            else:
+                raise RuntimeError("Cannot format anchor: failed to resolve num")
+        else:
+            raise RuntimeError("Cannot format anchor: item not resolved")
 
 
 @register_adapter('bibxml6')
@@ -378,27 +420,31 @@ class IeeeAdapter(Xml2rfcAdapter):
     which are considered reliably formatted but are not compatible
     with preexisting paths.
 
-    :term:`docid.id` -> :term:`xml2rfc anchor` conversion logic:
+    - :term:`docid.id` -> :term:`xml2rfc anchor` conversion logic:
 
-    - Split the path into prefix and the rest of the anchor.
+      1. Split the path into prefix and the rest of the anchor.
 
-    - In prefix, slashes are replaced with underscores, e.g.:
+      2. In prefix, slashes are replaced with underscores, e.g.:
 
-      - IEEE documents start with ``R.IEEE.``,
-      - mixed-published documents start with e.g. ``R.ANSI_IEEE.``.
+         - IEEE documents start with ``R.IEEE.``,
+         - mixed-published documents start with e.g. ``R.ANSI_IEEE.``.
 
-    - In rest of the anchor, whitespace are replaced with
-      underscores. (Slashes are left as is.)
+      3. The rest of the anchor is URL quoted
+         (everything is percent-encoded except ASCII letters, numbers,
+         basic punctuation like dash and forward slash).
 
-    - Prefix and rest are recombined, separated by period;
-      and everything is prefixed with ``R.``.
+      4. Prefix and rest are recombined, separated by period;
+         and everything is prefixed with ``R.``.
 
-    The anchor is converted back to docid using the same logic in reverse.
+    - xml2rfc anchor resolution logic:
 
-    For anchors that don’t start with ``R.``,
-    adapter doesn’t resolve the xml2rfc path, letting the view fall back
-    to archive XML data.
+      - For anchors that don’t start with ``R.``,
+        adapter doesn’t resolve the xml2rfc path, letting the view fall back
+        to archive XML data.
+
+      - For anchors that start with ``R.``, as above in reverse.
     """
+
     exact_docid_match = True
 
     @classmethod
@@ -406,8 +452,12 @@ class IeeeAdapter(Xml2rfcAdapter):
         if ((docid := get_primary_docid(item.docid))
                 and docid.type == 'IEEE'):
             prefix, rest = docid.id.split(' ', 1)
-            anchor = f"R.{prefix.replace('/', '_')}.{rest.replace(' ', '_')}"
-            return [(anchor, None)]
+            anchor = f"R.{prefix.replace('/', '_')}.{urllib.parse.quote(rest)}"
+            return [(
+                anchor,
+                "The R-prefixed xml2rfc path uses filenames "
+                "derived from authoritative IEEE identifiers "
+                "in a reversible manner.")]
         return []
 
     def resolve_docid(self) -> Optional[DocID]:
@@ -424,7 +474,7 @@ class IeeeAdapter(Xml2rfcAdapter):
             id_prefix, rest = unprefixed.split('.', 1)
             return DocID(
                 type="IEEE",
-                id=f"{id_prefix.replace('_', '/')} {rest.replace('_', ' ')}",
+                id=f"{id_prefix.replace('_', '/')} {urllib.parse.unquote(rest)}",
             )
 
 
@@ -433,8 +483,8 @@ class IanaAdapter(Xml2rfcAdapter):
     """
     Resolves IANA paths.
 
-    Note that these are not well-tested, since bibxml-iana
-    snapshot is not available.
+    The forward slash that separates registry ID part from subregistry ID part
+    in subregistry identifiers is replaced by underscore in xml2rfc paths.
     """
     exact_docid_match = True
 
@@ -451,8 +501,28 @@ class IanaAdapter(Xml2rfcAdapter):
         return []
 
     def resolve_docid(self) -> Optional[DocID]:
-        id = self.anchor.replace('IANA.', 'IANA ').replace('_', '/')
-        return DocID(type="IANA", id=id)
+        if self.anchor.startswith('IANA.'):
+            id = self.anchor.replace('IANA.', 'IANA ', 1).replace('_', '/')
+            return DocID(type="IANA", id=id)
+        return None
+
+
+    def resolve(self) -> BibliographicItem:
+        refs = self.fetch_refs()
+        if num_refs := len(refs):
+            self.log(f"{num_refs} found")
+            resolved_item = self.build_bibitem_from_refs(refs)
+            link = as_list(resolved_item.link or [])
+            for index, _ in enumerate(link):
+                parsed_link = urlparse(link[index].content)
+                if parsed_link.scheme == "http":
+                    link[index].content = \
+                        parsed_link._replace(scheme="https").geturl()
+            resolved_item.date = []
+            return resolved_item
+        else:
+            self.log("no refs found")
+            raise RefNotFoundError()
 
 
 @register_adapter('bibxml9')
@@ -474,6 +544,17 @@ class RfcSubseriesAdapter(Xml2rfcAdapter):
     ])
     """Exhaustive set of all RFC subseries ID prefixes."""
 
+    def format_anchor(self) -> Optional[str]:
+        parts = self.anchor.split('.')
+        if len(parts) == 2:
+            try:
+                num = int(parts[1])
+            except (ValueError, TypeError):
+                return None
+            else:
+                return f'{parts[0]}{num}'
+        return None
+
     @classmethod
     def reverse(cls, item: BibliographicItem) -> List[ReversedRef]:
         if ((docid := get_primary_docid(item.docid))
@@ -492,6 +573,8 @@ class RfcSubseriesAdapter(Xml2rfcAdapter):
 
         if len(parts) >= 2:
             series, num_raw, *_ = self.anchor.split('.')
+            if series not in self.SUBSERIES_STEMS:
+                raise ValueError("Invalid rfcsubseries ID")
             try:
                 num = int(num_raw)
             except ValueError:
@@ -505,6 +588,8 @@ class RfcSubseriesAdapter(Xml2rfcAdapter):
 class NistAdapter(Xml2rfcAdapter):
     """
     Resolves NIST paths.
+
+    This is not very reliable, fallbacks may occur.
     """
 
     @classmethod
@@ -520,27 +605,29 @@ class NistAdapter(Xml2rfcAdapter):
         return None
 
     def fetch_refs(self) -> Sequence[RefData]:
-        docid = (
-            self.anchor.
-            removeprefix('NIST.').
-            replace('_', ' ').replace('.', ' '))
+        if self.anchor.startswith('NIST.'):
+            docid = (
+                self.anchor.
+                removeprefix('NIST.').
+                replace('_', ' ').replace('.', ' '))
 
-        # Split prefix from the rest
-        _, rest = docid.split(' ', 1)
+            # Split prefix from the rest
+            _, rest = docid.split(' ', 1)
 
-        query = (
-            '@.type == "NIST" && ('
-                # Handles e.g. NIST.LCIRC.xxxx,
-                # which should be NIST.NBS.LCIRC
-                '@.id like_regex "(?i)(NBS|NIST) %s" ||'
-                # Handles normal cases like NIST.NBS.xxxx
-                '@.id like_regex "(?i)%s"'
-            ')' % (re.escape(rest), re.escape(docid))
-        )
-        self.log(f"using query {query}")
-        return search_refs_relaton_field({
-            'docid[*]': query,
-        }, limit=10, exact=True)
+            query = (
+                '@.type == "NIST" && ('
+                    # Handles e.g. NIST.LCIRC.xxxx,
+                    # which should be NIST.NBS.LCIRC
+                    '@.id like_regex "(?i)(NBS|NIST) %s" ||'
+                    # Handles normal cases like NIST.NBS.xxxx
+                    '@.id like_regex "(?i)%s"'
+                ')' % (re.escape(rest), re.escape(docid))
+            )
+            self.log(f"using query {query}")
+            return search_refs_relaton_field({
+                'docid[*]': query,
+            }, limit=10, exact=True)
+        return []
 
 
 @register_adapter('bibxml7')
@@ -560,7 +647,18 @@ class DoiAdapter(Xml2rfcAdapter):
         if not result:
             raise RefNotFoundError()
         else:
+            # https://github.com/ietf-tools/bibxml-service/issues/332
+            link = as_list(result.bibitem.link or [])
+            for index, _ in enumerate(link):
+                parsed_link = urlparse(link[index].content)
+                if parsed_link.netloc == "dx.doi.org":
+                    link[index].content = \
+                        parsed_link._replace(scheme="https")._replace(netloc="doi.org").geturl()
             return result.bibitem
+
+    def format_anchor(self) -> Optional[str]:
+        formatted_anchor = self.anchor.replace(".", "_", 1).replace("/", "_")
+        return f"{formatted_anchor.upper()}"
 
 
 def _sort_by_id_draft_number(item: RefData):

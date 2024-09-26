@@ -142,6 +142,8 @@ Main database
     User password for PostgreSQL server authentication.
 
 
+.. _indexing-env-variables:
+
 Indexing
 --------
 
@@ -152,6 +154,14 @@ Indexing
     Must be an absolute path.
 
     See :data:`bibxml.settings.DATASET_TMP_ROOT`.
+
+``AUTO_REINDEX_INTERVAL``
+    accepted by Django and Compose, pass-through
+
+    How many seconds to wait before reindexing a source.
+    Must be larger than zero for reindexing to be enabled.
+
+    See :data:`bibxml.settings.AUTO_REINDEX_INTERVAL` for more.
 
 
 Celery & Redis
@@ -201,15 +211,29 @@ Security
     Each will have the same effect and access privileges
     as ``API_SECRET``.
 
+``REQUIRE_DATATRACKER_AUTH``
+    accepted by Django and Compose, pass-through
+
+    Controls public-side authentication requirement.
+
+    If set to ``1``, the setting is set to ``True``.
+
+    .. seealso::
+
+       - :data:`bibxml.settings.REQUIRE_DATATRACKER_AUTH`
+       - :doc:`/topics/auth`
+
 ``DEBUG``
     accepted by Django and Compose, pass-through
 
-    If set to 1, Django’s built-in ``runserver`` is used
+    If set to ``1``, Django’s built-in ``runserver`` is used
     to serve the GUI, and error pages are verbose.
 
     It will also try to auto-detect IPs and hostnames and add them
     to ``INTERNAL_IP`` for Django debug toolbar to work
     in Docker environment.
+
+    It will also assume plain-text HTTP in some scenarios.
 
     .. important:: Don’t set in production.
 

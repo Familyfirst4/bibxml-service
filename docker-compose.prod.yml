@@ -1,0 +1,28 @@
+version: "3.3"
+
+services:
+  redis:
+    logging:
+      driver: "syslog"
+      options:
+        syslog-address: "${SYSLOG}"
+
+  db:
+    logging:
+      driver: "syslog"
+      options:
+        syslog-address: "${SYSLOG}"
+    volumes:
+      - ./bibdb:/var/lib/postgresql/data
+
+  web:
+    logging:
+      driver: "syslog"
+      options:
+        syslog-address: "${SYSLOG}"
+
+  celery:
+    logging:
+      driver: "syslog"
+      options:
+        syslog-address: "${SYSLOG}"

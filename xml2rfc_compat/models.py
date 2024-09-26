@@ -7,7 +7,7 @@ from django.db.models.query import QuerySet
 dir_subpath_regex = (
     r'(?P<xml2rfc_subpath>'
     r'(?P<dirname>%s)/'
-    r'_?reference\.(?P<anchor>[-+;()A-Za-z0-9./_]+)\.xml'
+    r'_?reference\.(?P<anchor>[-+;%% ()A-Za-z0-9./_]+)\.xml'
     r')$'
 )
 """Django’s URL path regular expression
@@ -20,6 +20,8 @@ Provides the following components to view functions:
 - ``dirname``: dirname only, e.g. bibxml3 or bibxml-ids.
 - ``anchor``: the part after ``reference.`` prefix
   and before file extension.
+
+In some way, a reverse of :func:`.construct_normalized_xml2rfc_subpath()`.
 """
 
 
@@ -27,6 +29,11 @@ def get_dir_subpath_regex(dirname: str):
     """Returns a compiled :data:`.dir_subpath_regex`,
     substituting ``xml2rfc_subpath`` with given ``dirname``."""
     return re.compile(dir_subpath_regex % dirname)
+
+
+def construct_normalized_xml2rfc_subpath(dirname: str, anchor: str) -> str:
+    """Constructs an xml2rfc subpath from ``dirname`` and ``anchor``."""
+    return f'{dirname}/reference.{anchor}.xml'
 
 
 class Xml2rfcItem(models.Model):

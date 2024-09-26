@@ -14,7 +14,9 @@
 import os
 import sys
 from typing import List
+
 import django
+
 sys.path.insert(0, '/code')
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'bibxml.settings')
 django.setup()
@@ -59,11 +61,11 @@ exclude_patterns: List[str] = []
 
 extlinks = {
     'issue': (
-        'https://github.com/ietf-ribose/bibxml-service/issues/%s',
+        'https://github.com/ietf-tools/bibxml-service/issues/%s',
         'bibxml-service GitHub issue #%s',
     ),
     'github': (
-        'https://github.com/ietf-ribose/bibxml-service/blob/main/%s',
+        'https://github.com/ietf-tools/bibxml-service/blob/main/%s',
         '%s (on GitHub)',
     ),
 }
@@ -71,7 +73,7 @@ extlinks = {
 html_css_files = [
     'custom-haiku.css',
 ]
-html_js_files = [
+html_js_files: List[str] = [
 ]
 
 autodoc_member_order = 'bysource'
@@ -86,7 +88,7 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3', None),
     'django': ('https://docs.djangoproject.com/en/stable', 'https://docs.djangoproject.com/en/stable/_objects/'),
     'simplejson': ('https://simplejson.readthedocs.io/en/stable/', 'https://simplejson.readthedocs.io/en/stable/objects.inv'),
-    'requests': ('https://docs.python-requests.org/en/stable/', 'https://docs.python-requests.org/en/stable/objects.inv'),
+    'requests': ('https://requests.readthedocs.io/en/stable/', 'https://requests.readthedocs.io/en/stable/objects.inv'),
     'relaton': ('https://relaton-py.readthedocs.io/en/latest/', 'https://relaton-py.readthedocs.io/en/latest/objects.inv'),
 }
 

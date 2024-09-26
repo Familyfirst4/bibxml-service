@@ -16,7 +16,7 @@ from django.conf import settings
 
 from common.git import ensure_latest
 
-from . import cache
+from . import cache, celery_app
 
 
 __all__ = (
@@ -35,6 +35,12 @@ Log events are expected only when ran in Celery context.
 """
 
 
+AUTO_REINDEX_INTERVAL: Optional[int] = getattr(
+    settings,
+    'AUTO_REINDEX_INTERVAL',
+    None)
+
+
 @dataclass
 class IndexableSource:
     """
@@ -42,6 +48,11 @@ class IndexableSource:
 
     An instance of this class will be automatically created
     when you use the :func:`register_git_source` decorator.
+
+    Subsequently, when the project operates on an registered source
+    (e.g., when indexing is requested), this is the spec.
+
+    .. seealso:: :class:`~.IndexableSourceToRegister`
     """
 
     index: Callable[
@@ -49,20 +60,24 @@ class IndexableSource:
             Optional[List[str]],
             Optional[Callable[[str, int, int], None]],
             Optional[Callable[[str, str], None]],
+            Optional[bool],
         ],
         Tuple[int, int],
     ]
     """
-    The indexer function. Takes 3 positional arguments,
+    The indexer function. Takes 4 positional arguments,
     any of which can be None:
 
-    1) a list of source-specific references to index
+    1) ``refs``, a list of source-specific references to index
        (absence means “index all”)
     2) an on-progress handler
        (which should be called with an action as a string
        and 2 ints, total and indexed).
     3) an on-error handler, called with 2 strings
        (problematic item and error description).
+    4) ``force``, a flag that will ensure the indexer runs even
+       if cached HEAD commit hash from previous indexation
+       has not changed.
 
     Returns 2-tuple of integers
     (number of found items, number of indexed items).
@@ -92,7 +107,10 @@ that handles data retrieval and indexing.
 
 
 class IndexableSourceToRegister(TypedDict, total=True):
-    """A dictionary expected by indexable source registration."""
+    """A dictionary expected by indexable source registration.
+
+    When you *register* a pluggable indexable source, this is the spec.
+    """
 
     indexer: Callable[
         [
@@ -173,8 +191,9 @@ def register_git_source(source_id: str, repos: List[Tuple[str, str]]):
         @functools.wraps(index_info['indexer'])
         def handle_index(
             refs: Optional[List[str]],
-            on_progress: Optional[Callable[[str, int, int], None]],
-            on_item_error: Optional[Callable[[str, str], None]],
+            on_progress: Optional[Callable[[str, int, int], None]] = None,
+            on_item_error: Optional[Callable[[str, str], None]] = None,
+            force=False,
         ) -> Tuple[int, int]:
             work_dir_paths: List[str] = []
             repo_heads: List[str] = []
@@ -209,7 +228,7 @@ def register_git_source(source_id: str, repos: List[Tuple[str, str]]):
 
             heads_serialized = ', '.join(repo_heads)
 
-            if cache.get(latest_indexed_heads_key) != heads_serialized:
+            if force or cache.get(latest_indexed_heads_key) != heads_serialized:
                 log.info(
                     "Repositories changed for %s, starting index",
                     source_id)
@@ -247,6 +266,14 @@ def register_git_source(source_id: str, repos: List[Tuple[str, str]]):
         )
 
         registry[source_id] = indexable_source
+
+        if AUTO_REINDEX_INTERVAL:
+            # Set up beat schedule
+            celery_app.conf.beat_schedule[f'index-{source_id}'] = {
+                'task': 'sources.tasks.fetch_and_index_task',
+                'schedule': AUTO_REINDEX_INTERVAL,
+                'args': (source_id, ),
+            }
 
     return wrapper
 

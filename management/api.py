@@ -10,15 +10,17 @@ from sources.task_status import get_dataset_task_history, push_task
 from sources import indexable
 
 
-def run_indexer(request, dataset_name):
+def run_indexer(request, dataset_name: str):
     """Starts indexing for given dataset."""
+
+    force = request.GET.get('force', False)
 
     # TODO: Quickly check sources for given dataset before queueing indexing
 
     refs_raw = request.POST.get('refs', None)
     refs = refs_raw.split(',') if refs_raw else None
 
-    result = fetch_and_index.delay(dataset_name, refs)
+    result = fetch_and_index.delay(dataset_name, refs, force)
     task_id = result.id
 
     if task_id:
